@@ -65,22 +65,9 @@ La source analysee est le fichier public TLC des trajets Yellow Taxi de janvier 
 https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2025-01.parquet
 ```
 
-Premiers constats mesures localement avec DuckDB :
+La fiche source complete est disponible dans [docs/fiche_trajets.md](docs/fiche_trajets.md). Elle centralise l'identite de la source, le volume mesure, les colonnes, les codes TLC et les principales anomalies observees.
 
-| Mesure | Valeur |
-|---|---:|
-| Format | Parquet |
-| Taille | 59 158 238 octets, environ 57 MiB |
-| Nombre de lignes | 3 475 226 |
-| Nombre de colonnes | 20 |
-
-Quelques points de qualite identifies pendant l'exploration :
-
-- 22 trajets ont une date de prise en charge hors janvier 2025.
-- 540 149 lignes ont `passenger_count` a `NULL`.
-- 124 lignes ont une date de depose anterieure a la date de prise en charge.
-
-Ces observations confirment que les donnees sont exploitables, mais qu'elles doivent passer par une couche de nettoyage et de controle avant d'alimenter les tables d'analyse.
+Le compte rendu technique de l'audit DuckDB reste conserve dans [parquet/audit_results.md](parquet/audit_results.md).
 
 ## Jour 2 - Charger les fichiers dans RAW
 
