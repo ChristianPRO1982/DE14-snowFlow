@@ -1,6 +1,6 @@
 services:
   duckdb:
-    image: ghcr.io/duckdb/duckdb:latest
+    image: duckdb/duckdb:latest
     entrypoint: ["duckdb"]
     working_dir: /data
     volumes:
