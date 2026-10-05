@@ -22,7 +22,9 @@ section() {
 }
 
 duckdb_query() {
-    docker compose run --rm "$DUCKDB_SERVICE" -c "$1"
+    docker compose run --rm "$DUCKDB_SERVICE" \
+        -c ".mode line" \
+        -c "$1"
 }
 
 
@@ -245,9 +247,3 @@ ORDER BY column_name, value;
 # -------------------------------------------------------------------
 
 section "AUDIT TERMINÉ"
-
-echo "Reste à compléter manuellement dans la fiche source :"
-echo "- signification métier de chaque colonne"
-echo "- signification des codes depuis le dictionnaire TLC"
-echo "- délai réel de publication"
-echo "- 2 ou 3 observations intéressantes à partir des résultats ci-dessus"
