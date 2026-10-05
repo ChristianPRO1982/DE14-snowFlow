@@ -1,4 +1,4 @@
-# DE14 SnowFlow
+# DE14 SnowFlow + Airflow
 
 Pipeline medaillon NYC Yellow Taxi avec Snowflake et Airflow.
 
