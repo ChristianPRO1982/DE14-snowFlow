@@ -5,6 +5,18 @@ Pipeline medaillon NYC Yellow Taxi avec Snowflake et Airflow.
 Ce depot repond au brief `Pipeline medaillon NYC Yellow Taxi : Snowflake et Airflow`.
 L'objectif est de rendre rejouable l'ingestion mensuelle des fichiers publics TLC, puis les transformations et controles de qualite dans Snowflake via Airflow.
 
+## Comptes rendus
+
+Les comptes rendus de progression sont regroupes dans le dossier [rendu/](rendu/). Ils suivent le decoupage pedagogique du brief, avec un fichier Markdown par jour.
+
+| Jour | Document | Contenu |
+|---|---|---|
+| Jour 1 | [rendu/jour1.md](rendu/jour1.md) | Compréhension de l'architecture, exploration du fichier Parquet de janvier, fiche source, infrastructure Snowflake, role `TRANSFORMER`, utilisateur `AIRFLOW_SVC` et test de connexion par cle. |
+| Jour 2 | [rendu/jour2.md](rendu/jour2.md) | Creation de la couche `RAW`, formats de fichiers, stage Snowflake, tables source et chargement rejouable des trajets et des zones. |
+| Jour 3 | [rendu/jour3.md](rendu/jour3.md) | Mise en place du projet Airflow avec Astro, connexion Snowflake securisee et automatisation du chargement mensuel. |
+| Jour 4 | [rendu/jour4.md](rendu/jour4.md) | Orchestration des transformations SQL, ordre des couches `STAGING`, `INTERMEDIATE`, `MARTS` et controles de qualite dans le DAG. |
+| Jour 5 | [rendu/jour5.md](rendu/jour5.md) | Requete de reponse metier, controles finaux, suivi des credits, droits du role et preparation de la demonstration. |
+
 ## Installation et verification locale
 
 Il n'y a pas encore d'application a installer a la racine du depot. La premiere verification locale porte sur le fichier Parquet de janvier 2025, place dans :
