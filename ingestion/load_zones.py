@@ -11,6 +11,26 @@ FILE_NAME = "taxi_zone_lookup.csv"
 CHUNK_SIZE = 1024 * 1024
 
 
+def copy_into_raw(conn, file_name: str) -> list[tuple]:
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            COPY INTO TAXI_ZONE_LOOKUP
+            FROM @NYC_TAXI_STAGE
+            FILES = ('{file_name}')
+            FILE_FORMAT = (FORMAT_NAME = CSV_FF)
+            MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE
+            INCLUDE_METADATA = (
+                _source_file = METADATA$FILENAME,
+                _loaded_at = METADATA$START_SCAN_TIME
+            )
+            ON_ERROR = ABORT_STATEMENT
+            """
+        )
+
+        return cur.fetchall()
+
+
 def load_private_key() -> object:
     key_path = Path(os.environ["SNOWFLAKE_PRIVATE_KEY_PATH"])
 
@@ -73,6 +93,11 @@ def main() -> None:
 
         for row in upload_results:
             print(f"PUT result: {row}")
+
+        copy_results = copy_into_raw(conn, FILE_NAME)
+
+        for row in copy_results:
+            print(f"COPY result: {row}")
 
 
 if __name__ == "__main__":
