@@ -1,7 +1,7 @@
 # Compte rendu — Jour 3
 
 ```text
-1. Initialiser le projet Astro / Airflow                  ✅
+1. Initialiser le projet Astro / Airflow                 ✅
 2. Configurer la connexion Snowflake                     ✅
 3. Tester AIRFLOW_SVC depuis un DAG                      ✅
 4. Comprendre la date logique                            ✅
@@ -10,7 +10,7 @@
 7. Télécharger le fichier                                ✅
 8. Envoyer le fichier sur le stage                       ✅
 9. Copier le fichier dans RAW                            ✅
-10. Activer le catchup Jan / Fév / Mars                 ✅
+10. Activer le catchup Jan / Fév / Mars                  ✅
 11. Obtenir trois runs Airflow en succès                 ✅
 12. Vérifier les volumes RAW dans Snowflake              ✅
 ```
