@@ -2,7 +2,10 @@ from pathlib import Path
 
 import pendulum
 import requests
-from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
+from airflow.providers.common.sql.operators.sql import (
+    SQLCheckOperator,
+    SQLExecuteQueryOperator,
+)
 from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
 from airflow.sdk import TaskGroup, dag, get_current_context, task
 
@@ -115,6 +118,12 @@ def nyc_taxi_monthly():
     url = check_file_exists(file_name)
     staged_file = download_and_put(url)
     raw_loaded = copy_into_raw(staged_file)
+    check_raw_month_loaded = SQLCheckOperator(
+        task_id="check_raw_month_loaded",
+        conn_id=CONN_ID,
+        sql="controles/raw_mois_charge.sql",
+        retries=0,
+    )
 
     # ------------------------------------------------------------------
     # Core tables
@@ -224,6 +233,13 @@ def nyc_taxi_monthly():
             split_statements=True,
         )
 
+        check_trips_no_duplicates = SQLCheckOperator(
+            task_id="check_trips_no_duplicates",
+            conn_id=CONN_ID,
+            sql="controles/trips_no_duplicates.sql",
+            retries=0,
+        )
+
         mart_daily_revenue = SQLExecuteQueryOperator(
             task_id="mart_daily_revenue",
             conn_id=CONN_ID,
@@ -249,7 +265,7 @@ def nyc_taxi_monthly():
     # Dependencies
     # ------------------------------------------------------------------
 
-    raw_loaded >> create_core_tables
+    raw_loaded >> check_raw_month_loaded >> create_core_tables
 
     create_core_tables >> [
         stg_yellow_trips,
@@ -271,14 +287,16 @@ def nyc_taxi_monthly():
 
     int_trips_flagged >> mart_data_quality
 
+    fct_trips >> check_trips_no_duplicates
+
     [
-        fct_trips,
+        check_trips_no_duplicates,
         dim_date,
         dim_payment_type,
     ] >> mart_daily_revenue
 
     [
-        fct_trips,
+        check_trips_no_duplicates,
         dim_zone,
     ] >> mart_zone_hourly_demand
 
