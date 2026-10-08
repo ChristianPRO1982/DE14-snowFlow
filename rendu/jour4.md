@@ -7,8 +7,8 @@
 ```text
 Bloc 1 — Lire et comprendre les fichiers SQL fournis           ✅ TERMINÉ
 Bloc 2 — Ajouter les transformations SQL au DAG                ✅ TERMINÉ
-Bloc 3 — Ajouter les contrôles de qualité                       ⏳ À FAIRE
-Bloc 4 — Provoquer volontairement l'échec d'un contrôle        ⏳ À FAIRE
+Bloc 3 — Ajouter les contrôles de qualité                       ✅ TERMINÉ
+Bloc 4 — Provoquer volontairement l'échec d'un contrôle        ✅ TERMINÉ
 Bloc 5 — Rejouer février et vérifier l'idempotence              ⏳ À FAIRE
 Bloc 6 — Validation finale du Jour 4                            ⏳ À FAIRE
 ```
@@ -1611,71 +1611,860 @@ Les runs de janvier, février et mars restent volontairement inchangés pour év
 
 ---
 
-# Bloc 3 — Ajouter les contrôles de qualité ⏳ À FAIRE
+# Bloc 3 — Ajouter les contrôles de qualité ✅
 
-Le brief demande de brancher :
+## Objectif
+
+Le Bloc 3 consiste à ajouter des contrôles de qualité dans le DAG afin de bloquer le pipeline si les données ne respectent pas les règles attendues.
+
+Trois contrôles sont désormais intégrés :
 
 ```text
-controles/raw_mois_charge.sql
+1. vérifier que le mois est bien chargé dans RAW
+2. vérifier que le taux de rejet reste acceptable
+3. vérifier qu'il n'existe aucun doublon dans FCT_TRIPS
 ```
 
-puis d'écrire au moins deux contrôles supplémentaires.
+Les contrôles utilisent :
 
-Contrôles attendus :
-
-```text
-[ ] mois RAW chargé
-[ ] absence de trajets en double
-[ ] seuil maximum de trajets rejetés
-```
-
-Ils devront utiliser :
-
-```text
+```python
 SQLCheckOperator
 ```
 
 avec :
 
-```text
+```python
 retries=0
 ```
 
-### État
+L'objectif est qu'un contrôle en échec bloque immédiatement les traitements situés en aval.
+
+---
+
+## 1. Import de `SQLCheckOperator`
+
+L'import Airflow a été complété :
+
+```python
+from airflow.providers.common.sql.operators.sql import (
+    SQLCheckOperator,
+    SQLExecuteQueryOperator,
+)
+```
+
+`SQLCheckOperator` exécute une requête SQL qui doit renvoyer une valeur vraie.
+
+Exemples de valeurs considérées comme invalides :
 
 ```text
-⏳ À FAIRE
+FALSE
+0
+NULL
+valeur vide
+```
+
+Dans ce cas, la tâche Airflow passe en échec et les tâches dépendantes ne sont pas exécutées.
+
+---
+
+## 2. Contrôle RAW : `raw_mois_charge.sql`
+
+Le premier contrôle était fourni dans le starter kit :
+
+```text
+airflow/include/sql/controles/raw_mois_charge.sql
+```
+
+Contenu :
+
+```sql
+-- Le mois traité est bien présent dans RAW.
+SELECT COUNT(*) > 0
+FROM NYC_TAXI.RAW.YELLOW_TRIPDATA
+WHERE _source_file =
+    'yellow_tripdata_{{ logical_date.strftime("%Y-%m") }}.parquet';
+```
+
+Exemple pour février 2025 :
+
+```text
+logical_date.strftime("%Y-%m")
+→ 2025-02
+```
+
+Le contrôle recherche donc :
+
+```text
+yellow_tripdata_2025-02.parquet
+```
+
+La tâche Airflow ajoutée est :
+
+```python
+check_raw_month_loaded = SQLCheckOperator(
+    task_id="check_raw_month_loaded",
+    conn_id=CONN_ID,
+    sql="controles/raw_mois_charge.sql",
+    retries=0,
+)
+```
+
+Elle est placée juste après le chargement RAW :
+
+```python
+raw_loaded >> check_raw_month_loaded >> create_core_tables
+```
+
+Flux :
+
+```text
+copy_into_raw
+      ↓
+check_raw_month_loaded
+      ↓
+create_core_tables
+```
+
+Ainsi, si le fichier du mois n'est pas présent en RAW, aucune transformation SQL ne démarre.
+
+---
+
+## 3. Contrôle des doublons dans `FCT_TRIPS`
+
+Un nouveau fichier a été créé :
+
+```text
+airflow/include/sql/controles/trips_no_duplicates.sql
+```
+
+Contenu :
+
+```sql
+-- Le mois traité ne doit contenir aucun trajet en double.
+SELECT COUNT(*) = COUNT(DISTINCT trip_sk)
+FROM NYC_TAXI.MARTS.FCT_TRIPS
+WHERE source_file_month = '{{ ds }}'::date;
+```
+
+Le principe est :
+
+```text
+nombre total de lignes
+=
+nombre de trip_sk distincts
+```
+
+Si les deux valeurs sont différentes :
+
+```text
+au moins un doublon existe
+→ FALSE
+→ contrôle Airflow en échec
+```
+
+La tâche Airflow est :
+
+```python
+check_trips_no_duplicates = SQLCheckOperator(
+    task_id="check_trips_no_duplicates",
+    conn_id=CONN_ID,
+    sql="controles/trips_no_duplicates.sql",
+    retries=0,
+)
+```
+
+Elle est placée après :
+
+```text
+MARTS.FCT_TRIPS
+```
+
+Dépendance :
+
+```python
+fct_trips >> check_trips_no_duplicates
+```
+
+Les marts qui exploitent la table de faits attendent ensuite la réussite de ce contrôle.
+
+Pour le mart quotidien :
+
+```python
+[
+    check_trips_no_duplicates,
+    dim_date,
+    dim_payment_type,
+] >> mart_daily_revenue
+```
+
+Pour le mart de demande horaire :
+
+```python
+[
+    check_trips_no_duplicates,
+    dim_zone,
+] >> mart_zone_hourly_demand
+```
+
+Flux :
+
+```text
+FCT_TRIPS
+    ↓
+check_trips_no_duplicates
+    ├──→ MART_DAILY_REVENUE
+    └──→ MART_ZONE_HOURLY_DEMAND
 ```
 
 ---
 
-# Bloc 4 — Tester volontairement un échec ⏳ À FAIRE
+## 4. Contrôle du taux de rejet
 
-Principe attendu :
-
-```text
-durcir temporairement un seuil
-        ↓
-relancer un run
-        ↓
-contrôle en échec
-        ↓
-vérifier que les tâches suivantes ne s'exécutent pas
-        ↓
-restaurer le seuil normal
-```
-
-Objectif :
+Un second contrôle personnalisé a été ajouté :
 
 ```text
-prouver qu'Airflow bloque le pipeline lorsque la qualité des données est insuffisante
+airflow/include/sql/controles/rejection_rate.sql
 ```
 
-### État
+Le seuil retenu est :
 
 ```text
-⏳ À FAIRE
+10 %
 ```
+
+Il est paramétré dans le DAG :
+
+```python
+params={
+    "max_trip_distance_miles": 100,
+    "max_trip_duration_min": 180,
+    "start_month": "2025-01-01",
+    "end_month": "2025-04-01",
+    "max_rejection_pct": 10,
+},
+```
+
+Cette valeur n'est donc pas codée en dur dans le fichier SQL.
+
+---
+
+## 5. SQL du contrôle du taux de rejet
+
+Contenu :
+
+```sql
+-- Le pourcentage de trajets rejetés du mois doit rester sous le seuil autorisé.
+SELECT
+    COALESCE(
+        100.0 * COUNT_IF(rejection_reason IS NOT NULL)
+        / NULLIF(COUNT(*), 0),
+        100.0
+    ) <= {{ params.max_rejection_pct }}
+FROM NYC_TAXI.INTERMEDIATE.INT_TRIPS__FLAGGED
+WHERE source_file_month = '{{ ds }}'::date;
+```
+
+Calcul effectué :
+
+```text
+nombre de trajets rejetés
+────────────────────────── × 100
+nombre total de trajets
+```
+
+Le résultat doit être :
+
+```text
+<= 10 %
+```
+
+### `NULLIF`
+
+```sql
+NULLIF(COUNT(*), 0)
+```
+
+évite une division par zéro.
+
+### `COALESCE`
+
+```sql
+COALESCE(..., 100.0)
+```
+
+permet de considérer un mois vide comme une anomalie.
+
+Si aucune ligne n'est disponible :
+
+```text
+taux utilisé = 100 %
+```
+
+Le contrôle échoue donc avec le seuil normal de 10 %.
+
+---
+
+## 6. Placement dans la couche INTERMEDIATE
+
+Le contrôle est créé dans :
+
+```python
+with TaskGroup(group_id="intermediate"):
+```
+
+Tâche :
+
+```python
+check_rejection_rate = SQLCheckOperator(
+    task_id="check_rejection_rate",
+    conn_id=CONN_ID,
+    sql="controles/rejection_rate.sql",
+    retries=0,
+)
+```
+
+La chaîne est :
+
+```python
+int_trips_flagged >> check_rejection_rate >> int_trips_enriched
+```
+
+Flux :
+
+```text
+STG_TLC__YELLOW_TRIPS
+          ↓
+INT_TRIPS__FLAGGED
+          ↓
+check_rejection_rate
+          ↓
+INT_TRIPS__ENRICHED
+          ↓
+FCT_TRIPS
+```
+
+Cela garantit que les données enrichies ne sont générées que si la proportion de trajets rejetés reste dans le seuil autorisé.
+
+---
+
+## 7. Dépendance du mart de qualité
+
+`MART_DATA_QUALITY` dépend désormais également de la réussite du contrôle :
+
+```python
+check_rejection_rate >> mart_data_quality
+```
+
+Flux :
+
+```text
+INT_TRIPS__FLAGGED
+          ↓
+check_rejection_rate
+       ┌──┴───────────┐
+       ↓              ↓
+INT_TRIPS__ENRICHED  MART_DATA_QUALITY
+```
+
+Cette organisation sera utile au Bloc 4 pour vérifier qu'un contrôle en échec bloque correctement les traitements situés en aval.
+
+---
+
+## 8. Graphe des contrôles qualité
+
+Le pipeline contient désormais trois barrières qualité principales :
+
+```text
+copy_into_raw
+      │
+      ▼
+check_raw_month_loaded
+      │
+      ▼
+create_core_tables
+      │
+      ▼
+STAGING
+      │
+      ▼
+INT_TRIPS__FLAGGED
+      │
+      ▼
+check_rejection_rate
+      │
+      ▼
+INT_TRIPS__ENRICHED
+      │
+      ▼
+FCT_TRIPS
+      │
+      ▼
+check_trips_no_duplicates
+      │
+      ├──→ MART_DAILY_REVENUE
+      │
+      └──→ MART_ZONE_HOURLY_DEMAND
+```
+
+Les contrôles sont donc placés juste après la donnée qu'ils vérifient et avant les traitements qui utilisent cette donnée.
+
+---
+
+## 9. Validation Airflow
+
+Après ajout des contrôles :
+
+```bash
+astro dev run dags list-import-errors
+```
+
+Résultat :
+
+```text
+No data found
+```
+
+Le DAG ne contient donc aucune erreur d'import.
+
+Vérification des tâches :
+
+```bash
+astro dev run tasks list nyc_taxi_monthly | grep check
+```
+
+Résultat :
+
+```text
+check_file_exists
+check_raw_month_loaded
+intermediate.check_rejection_rate
+marts.check_trips_no_duplicates
+```
+
+`check_file_exists` correspond à la vérification HTTP déjà présente lors de l'ingestion.
+
+Les trois contrôles SQL du Bloc 3 sont :
+
+```text
+check_raw_month_loaded
+intermediate.check_rejection_rate
+marts.check_trips_no_duplicates
+```
+
+---
+
+## 10. Pourquoi `retries=0`
+
+Les trois contrôles SQL utilisent :
+
+```python
+retries=0
+```
+
+Un contrôle qualité vérifie l'état actuel des données.
+
+Si la donnée est invalide, relancer automatiquement la même requête quelques minutes plus tard ne corrige rien.
+
+Sans `retries=0`, Airflow pourrait laisser inutilement la tâche en :
+
+```text
+up_for_retry
+```
+
+avant de finalement la marquer en échec.
+
+Avec :
+
+```python
+retries=0
+```
+
+le contrôle échoue immédiatement.
+
+---
+
+# Bilan du Bloc 3 ✅
+
+```text
+SQLCheckOperator importé                           ✅
+contrôle RAW fourni intégré                        ✅
+contrôle absence de doublons créé                  ✅
+contrôle taux maximum de rejet créé                ✅
+seuil max_rejection_pct paramétré à 10 %           ✅
+retries=0 sur tous les contrôles                   ✅
+contrôle RAW placé après COPY INTO                 ✅
+contrôle rejet placé après INT_TRIPS__FLAGGED      ✅
+contrôle doublons placé après FCT_TRIPS             ✅
+tâches aval dépendantes des contrôles              ✅
+aucune erreur d'import Airflow                     ✅
+trois contrôles SQL reconnus par Airflow           ✅
+```
+
+Le Bloc 3 est terminé.
+
+Aucun ancien run n'a encore été rejoué.
+
+La prochaine étape consiste à répondre à l'exigence du brief :
+
+```text
+provoquer volontairement l'échec d'un contrôle
+```
+
+Le contrôle retenu sera :
+
+```text
+intermediate.check_rejection_rate
+```
+
+Le paramètre :
+
+```text
+max_rejection_pct = 10
+```
+
+sera temporairement durci à :
+
+```text
+max_rejection_pct = 0
+```
+
+afin de vérifier que les tâches situées en aval ne s'exécutent pas.
+
+
+
+---
+
+# Bloc 4 — Tester volontairement un échec ✅
+
+## Objectif
+
+Le brief demande de vérifier qu'un contrôle qualité en échec bloque bien les tâches situées en aval.
+
+Le contrôle choisi est :
+
+```text
+intermediate.check_rejection_rate
+```
+
+En fonctionnement normal, le DAG utilise :
+
+```python
+"max_rejection_pct": 10,
+```
+
+Pour provoquer volontairement un échec, le seuil a été temporairement durci à :
+
+```python
+"max_rejection_pct": 0,
+```
+
+Avec ce seuil, le pipeline exige artificiellement :
+
+```text
+0 % de trajets rejetés
+```
+
+Dès qu'au moins un trajet du mois est rejeté, le contrôle doit donc échouer.
+
+---
+
+## 1. Modification temporaire du seuil
+
+Le paramètre du DAG a temporairement été modifié :
+
+```python
+params={
+    "max_trip_distance_miles": 100,
+    "max_trip_duration_min": 180,
+    "start_month": "2025-01-01",
+    "end_month": "2025-04-01",
+    "max_rejection_pct": 0,
+},
+```
+
+Cette modification ne change pas la logique SQL.
+
+Elle modifie uniquement la valeur utilisée dans :
+
+```jinja
+{{ params.max_rejection_pct }}
+```
+
+dans :
+
+```text
+controles/rejection_rate.sql
+```
+
+---
+
+## 2. Validation du DAG avec le seuil de test
+
+Commande :
+
+```bash
+astro dev run dags list-import-errors
+```
+
+Résultat :
+
+```text
+No data found
+```
+
+Le DAG restait donc valide avec le seuil temporaire à `0`.
+
+---
+
+## 3. Rejeu des runs existants
+
+Les DagRuns de janvier, février et mars existaient déjà avant l'ajout des nouvelles tâches SQL et des contrôles.
+
+Ils ont été rejoués afin de créer et exécuter les nouvelles Task Instances.
+
+Vérification des runs :
+
+```bash
+astro dev run dags list-runs nyc_taxi_monthly
+```
+
+État observé pendant le test :
+
+```text
+2025-01 → failed
+2025-02 → failed
+2025-03 → failed
+```
+
+Ce résultat était cohérent avec le seuil volontairement impossible de `0 %`.
+
+---
+
+## 4. Vérification détaillée du run de février
+
+Le run contrôlé est :
+
+```text
+scheduled__2025-02-01T00:00:00+00:00
+```
+
+Commande utilisée :
+
+```bash
+astro dev run tasks states-for-dag-run \
+  nyc_taxi_monthly \
+  'scheduled__2025-02-01T00:00:00+00:00'
+```
+
+Cette commande affiche l'état exact de toutes les Task Instances du run.
+
+---
+
+## 5. Résultats observés avant le contrôle
+
+Les tâches d'ingestion et de préparation ont réussi :
+
+```text
+build_file_name                    → success
+check_file_exists                  → success
+download_and_put                   → success
+copy_into_raw                      → success
+check_raw_month_loaded             → success
+create_core_tables                 → success
+staging.stg_tlc__yellow_trips      → success
+staging.stg_tlc__taxi_zones        → success
+staging.codes_tlc                  → success
+```
+
+Les dimensions indépendantes ont également pu être construites :
+
+```text
+marts.dim_date                     → success
+marts.dim_payment_type             → success
+marts.dim_rate_code                → success
+marts.dim_vendor                   → success
+marts.dim_zone                     → success
+```
+
+Cela montre qu'Airflow n'arrête pas arbitrairement tout le DAG : seules les branches dépendantes du contrôle en échec sont bloquées.
+
+---
+
+## 6. Échec volontaire du quality gate
+
+La tâche qui prépare les trajets avec leur motif de rejet a réussi :
+
+```text
+intermediate.int_trips__flagged
+→ success
+```
+
+Le contrôle a ensuite échoué comme prévu :
+
+```text
+intermediate.check_rejection_rate
+→ failed
+```
+
+Le comportement testé est donc :
+
+```text
+INT_TRIPS__FLAGGED
+        ↓
+check_rejection_rate
+        ↓
+      FAILED
+```
+
+Le contrôle utilise :
+
+```python
+retries=0
+```
+
+Il n'a donc pas attendu de retry inutile avant de passer en échec.
+
+---
+
+## 7. Blocage des tâches en aval
+
+Les tâches dépendant du contrôle sont passées en :
+
+```text
+upstream_failed
+```
+
+États observés pour février :
+
+```text
+intermediate.int_trips__enriched   → upstream_failed
+marts.mart_data_quality            → upstream_failed
+marts.fct_trips                    → upstream_failed
+marts.check_trips_no_duplicates    → upstream_failed
+marts.mart_daily_revenue           → upstream_failed
+marts.mart_zone_hourly_demand      → upstream_failed
+```
+
+Le graphe testé est donc :
+
+```text
+INT_TRIPS__FLAGGED
+        │
+        ▼
+check_rejection_rate
+        │
+        ▼
+      FAILED
+       / \\
+      /   \\
+     ▼     ▼
+INT_TRIPS__ENRICHED    MART_DATA_QUALITY
+upstream_failed        upstream_failed
+     │
+     ▼
+FCT_TRIPS
+upstream_failed
+     │
+     ▼
+check_trips_no_duplicates
+upstream_failed
+     │
+     ├──→ MART_DAILY_REVENUE
+     │    upstream_failed
+     │
+     └──→ MART_ZONE_HOURLY_DEMAND
+          upstream_failed
+```
+
+Le contrôle joue donc bien le rôle de :
+
+```text
+quality gate
+```
+
+Une donnée considérée comme de mauvaise qualité n'est pas propagée vers les couches suivantes.
+
+---
+
+## 8. Parallélisme conservé
+
+Les dimensions suivantes sont restées en `success` :
+
+```text
+DIM_DATE
+DIM_PAYMENT_TYPE
+DIM_RATE_CODE
+DIM_VENDOR
+DIM_ZONE
+```
+
+Elles ne dépendent pas de :
+
+```text
+check_rejection_rate
+```
+
+Leur exécution réussie est donc normale.
+
+Cela confirme que les dépendances du DAG sont suffisamment fines : un contrôle en échec bloque uniquement les branches qui dépendent réellement de lui.
+
+---
+
+## 9. Restauration du seuil normal
+
+Une fois le test terminé, le paramètre a été restauré à :
+
+```python
+"max_rejection_pct": 10,
+```
+
+Le seuil à `0` n'était qu'un réglage temporaire destiné à tester le comportement du DAG.
+
+---
+
+## 10. Validation après restauration
+
+Commande :
+
+```bash
+astro dev run dags list-import-errors
+```
+
+Résultat :
+
+```text
+No data found
+```
+
+Le DAG est donc revenu dans sa configuration normale et reste valide.
+
+---
+
+# Bilan du Bloc 4 ✅
+
+```text
+seuil temporairement abaissé à 0 %                  ✅
+DAG valide avec le seuil de test                    ✅
+run de février vérifié                              ✅
+INT_TRIPS__FLAGGED exécutée avec succès             ✅
+check_rejection_rate volontairement en échec        ✅
+tâches en aval bloquées                             ✅
+état upstream_failed vérifié                        ✅
+branches indépendantes toujours exécutables         ✅
+seuil normal de 10 % restauré                       ✅
+DAG valide après restauration                       ✅
+```
+
+Le Bloc 4 est terminé.
+
+Le prochain objectif est de rejouer février avec le seuil normal afin de vérifier :
+
+```text
+- que le pipeline passe entièrement ;
+- que le nombre de lignes reste identique après replay ;
+- qu'aucun doublon n'est créé.
+```
+
 
 ---
 
@@ -1796,8 +2585,8 @@ Checklist :
 ```text
 Bloc 1 — Analyse du SQL et dépendances                 ✅
 Bloc 2 — Orchestration SQL dans Airflow                ✅
-Bloc 3 — Contrôles qualité                             ⏳
-Bloc 4 — Test d'échec                                  ⏳
+Bloc 3 — Contrôles qualité                             ✅
+Bloc 4 — Test d'échec                                  ✅
 Bloc 5 — Replay / idempotence                          ⏳
 Bloc 6 — Validation finale                             ⏳
 ```
