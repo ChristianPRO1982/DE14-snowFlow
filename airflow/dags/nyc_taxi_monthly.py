@@ -27,6 +27,7 @@ STAGE = "NYC_TAXI.RAW.NYC_TAXI_STAGE"
         "max_trip_duration_min": 180,
         "start_month": "2025-01-01",
         "end_month": "2025-04-01",
+        "max_rejection_pct": 10,
     },
 )
 def nyc_taxi_monthly():
@@ -176,6 +177,13 @@ def nyc_taxi_monthly():
             split_statements=True,
         )
 
+        check_rejection_rate = SQLCheckOperator(
+            task_id="check_rejection_rate",
+            conn_id=CONN_ID,
+            sql="controles/rejection_rate.sql",
+            retries=0,
+        )
+
         int_trips_enriched = SQLExecuteQueryOperator(
             task_id="int_trips__enriched",
             conn_id=CONN_ID,
@@ -183,7 +191,7 @@ def nyc_taxi_monthly():
             split_statements=True,
         )
 
-        int_trips_flagged >> int_trips_enriched
+        int_trips_flagged >> check_rejection_rate >> int_trips_enriched
 
     # ------------------------------------------------------------------
     # MARTS
@@ -285,7 +293,7 @@ def nyc_taxi_monthly():
         dim_rate_code,
     ]
 
-    int_trips_flagged >> mart_data_quality
+    check_rejection_rate >> mart_data_quality
 
     fct_trips >> check_trips_no_duplicates
 
