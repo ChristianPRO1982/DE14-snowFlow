@@ -76,9 +76,33 @@ def nyc_taxi_monthly():
         finally:
             destination.unlink(missing_ok=True)
 
+    @task
+    def copy_into_raw(file_name: str) -> None:
+        hook = SnowflakeHook(snowflake_conn_id=CONN_ID)
+
+        hook.run(
+            f"""
+            COPY INTO NYC_TAXI.RAW.YELLOW_TRIPDATA
+            FROM @{STAGE}
+            FILES = ('{file_name}')
+            FILE_FORMAT = (
+                FORMAT_NAME = NYC_TAXI.RAW.PARQUET_FF
+            )
+            MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE
+            INCLUDE_METADATA = (
+                _source_file = METADATA$FILENAME,
+                _loaded_at = METADATA$START_SCAN_TIME
+            )
+            ON_ERROR = ABORT_STATEMENT
+            """
+        )
+
+        print(f"Copied into RAW: {file_name}")
+
     file_name = build_file_name()
     url = check_file_exists(file_name)
-    download_and_put(url)
+    staged_file = download_and_put(url)
+    copy_into_raw(staged_file)
 
 
 nyc_taxi_monthly()
