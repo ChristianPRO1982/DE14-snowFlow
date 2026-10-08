@@ -9,8 +9,8 @@ Bloc 1 — Lire et comprendre les fichiers SQL fournis           ✅ TERMINÉ
 Bloc 2 — Ajouter les transformations SQL au DAG                ✅ TERMINÉ
 Bloc 3 — Ajouter les contrôles de qualité                       ✅ TERMINÉ
 Bloc 4 — Provoquer volontairement l'échec d'un contrôle        ✅ TERMINÉ
-Bloc 5 — Rejouer février et vérifier l'idempotence              ⏳ À FAIRE
-Bloc 6 — Validation finale du Jour 4                            ⏳ À FAIRE
+Bloc 5 — Rejouer février et vérifier l'idempotence              ✅ TERMINÉ
+Bloc 6 — Validation finale du Jour 4                            ✅ TERMINÉ
 ```
 
 ---
@@ -2051,6 +2051,14 @@ intermediate.check_rejection_rate
 marts.check_trips_no_duplicates
 ```
 
+Après ajout des trois contrôles SQL, le DAG contient au total :
+
+```text
+22 tâches
+```
+
+Les 19 tâches recensées au Bloc 2 correspondaient à l'état du DAG avant l'ajout de ces trois contrôles.
+
 ---
 
 ## 10. Pourquoi `retries=0`
@@ -2468,135 +2476,558 @@ Le prochain objectif est de rejouer février avec le seuil normal afin de vérif
 
 ---
 
-# Bloc 5 — Rejouer février et vérifier l'idempotence ⏳ À FAIRE
+# Bloc 5 — Rejouer février et vérifier l'idempotence ✅
 
-Les runs du Jour 3 sont déjà terminés.
+## Objectif
 
-Les nouvelles tâches devront être rejouées avec `Clear`.
+Le Bloc 5 doit démontrer qu'un mois déjà traité peut être rejoué sans provoquer d'accumulation de lignes ni de doublons.
 
-Contrôles attendus :
+Le mois utilisé pour cette vérification est :
 
 ```text
-[ ] noter le nombre de lignes avant replay
-[ ] rejouer février
-[ ] vérifier le nombre de lignes après replay
-[ ] confirmer l'absence de doublon
+février 2025
 ```
 
-Le mécanisme repose sur :
+Le mécanisme d'idempotence des tables mensuelles repose sur :
 
 ```text
 DELETE du mois
 +
-INSERT du mois
-```
-
-### État
-
-```text
-⏳ À FAIRE
+INSERT du mois recalculé
 ```
 
 ---
 
-# Bloc 6 — Validation finale du Jour 4 ⏳ À FAIRE
+## 1. Premier replay avec le seuil normal
 
-## Résultat attendu
+Après le test volontaire du Bloc 4, le paramètre a été restauré à :
 
-Trois exécutions réussies :
-
-```text
-2025-01 ✅
-2025-02 ✅
-2025-03 ✅
+```python
+"max_rejection_pct": 10,
 ```
 
-Volume attendu :
+Les 22 Task Instances du run suivant ont été réinitialisées :
 
 ```text
-NYC_TAXI.MARTS.FCT_TRIPS
-=
+scheduled__2025-02-01T00:00:00+00:00
+```
+
+Le replay n'a cependant pas abouti normalement.
+
+État observé :
+
+```text
+intermediate.int_trips__flagged   → success
+intermediate.check_rejection_rate → failed
+intermediate.int_trips__enriched  → upstream_failed
+marts.fct_trips                    → upstream_failed
+```
+
+Le seuil de `10 %` n'était donc pas la cause du problème : il révélait une anomalie réelle dans les données chargées.
+
+---
+
+## 2. Diagnostic du taux de rejet anormal
+
+Un contrôle dans Snowflake a montré pour février :
+
+```text
+total_rows    = 3 577 543
+rejected_rows = 3 577 543
+valid_rows    = 0
+rejection_pct = 100 %
+```
+
+La répartition des motifs de rejet était :
+
+```text
+duration_too_long       = 3 572 379  (99,86 %)
+duration_non_positive   =     5 164  ( 0,14 %)
+```
+
+Le fichier SQL `intermediate/int_trips__flagged.sql` a alors été contrôlé.
+
+La règle de durée était correcte :
+
+```sql
+WHEN DATEDIFF('second', pickup_at, dropoff_at)
+     > {{ params.max_trip_duration_min }} * 60
+THEN 'duration_too_long'
+```
+
+Aucune modification des transformations SQL fournies n'était donc nécessaire.
+
+---
+
+## 3. Inspection des timestamps
+
+Un échantillon de la vue de staging a révélé des durées absurdes.
+
+Exemple avant correction :
+
+```text
+DURATION_SECONDS = 1 214 996 400
+DURATION_MINUTES = 20 249 940
+```
+
+Ces valeurs correspondaient en réalité à des timestamps Parquet dont l'unité logique n'était pas correctement interprétée.
+
+Le `FILE FORMAT` Snowflake a été inspecté avec :
+
+```sql
+DESC FILE FORMAT NYC_TAXI.RAW.PARQUET_FF;
+```
+
+Résultat :
+
+```text
+USE_LOGICAL_TYPE = false
+```
+
+Le format Parquet n'utilisait donc pas les logical types présents dans le fichier source pour interpréter correctement les timestamps.
+
+---
+
+## 4. Correction du format Parquet
+
+Le `FILE FORMAT` a été corrigé :
+
+```sql
+ALTER FILE FORMAT NYC_TAXI.RAW.PARQUET_FF
+SET USE_LOGICAL_TYPE = TRUE;
+```
+
+Vérification :
+
+```text
+USE_LOGICAL_TYPE = true
+```
+
+Cette modification ne corrigeant pas rétroactivement les lignes déjà chargées dans `RAW`, le mois de février a dû être rechargé.
+
+---
+
+## 5. Rechargement ponctuel de février
+
+Les lignes du fichier de février ont d'abord été supprimées :
+
+```sql
+DELETE FROM NYC_TAXI.RAW.YELLOW_TRIPDATA
+WHERE _source_file = 'yellow_tripdata_2025-02.parquet';
+```
+
+Puis le fichier déjà présent dans le stage a été rechargé avec le format corrigé :
+
+```sql
+COPY INTO NYC_TAXI.RAW.YELLOW_TRIPDATA
+FROM @NYC_TAXI.RAW.NYC_TAXI_STAGE
+FILES = ('yellow_tripdata_2025-02.parquet')
+FILE_FORMAT = (
+    FORMAT_NAME = NYC_TAXI.RAW.PARQUET_FF
+)
+MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE
+INCLUDE_METADATA = (
+    _source_file = METADATA$FILENAME,
+    _loaded_at = METADATA$START_SCAN_TIME
+)
+FORCE = TRUE
+ON_ERROR = ABORT_STATEMENT;
+```
+
+Résultat :
+
+```text
+status      = LOADED
+rows_parsed = 3 577 543
+rows_loaded = 3 577 543
+errors_seen = 0
+```
+
+`FORCE = TRUE` n'a été utilisé que pour cette opération ponctuelle de réparation, car Snowflake connaissait déjà le fichier dans son historique de chargement.
+
+Il n'a pas été ajouté au fonctionnement normal du DAG afin de conserver l'idempotence de l'ingestion.
+
+---
+
+## 6. Validation des timestamps après correction
+
+Un nouvel échantillon de la vue de staging a donné des valeurs réalistes :
+
+```text
+2025-02-01 16:49:17 → 2025-02-01 16:52:15 →  2,97 min
+2025-02-01 16:58:44 → 2025-02-01 17:25:09 → 26,42 min
+2025-02-01 16:53:31 → 2025-02-01 17:28:07 → 34,60 min
+2025-02-01 16:40:49 → 2025-02-01 17:41:24 → 60,58 min
+```
+
+Le problème venait donc bien du chargement Parquet et non des règles de transformation.
+
+---
+
+## 7. Replay complet de février après correction
+
+Les 22 Task Instances du run de février ont ensuite été réinitialisées.
+
+Commande de contrôle :
+
+```bash
+astro dev run tasks states-for-dag-run \
+  nyc_taxi_monthly \
+  'scheduled__2025-02-01T00:00:00+00:00'
+```
+
+Toutes les tâches sont revenues en `success`, notamment :
+
+```text
+check_raw_month_loaded                 → success
+intermediate.int_trips__flagged        → success
+intermediate.check_rejection_rate      → success
+intermediate.int_trips__enriched       → success
+marts.fct_trips                        → success
+marts.check_trips_no_duplicates        → success
+marts.mart_data_quality                → success
+marts.mart_daily_revenue               → success
+marts.mart_zone_hourly_demand          → success
+```
+
+Le contrôle du taux de rejet passe donc avec le seuil normal de `10 %` lorsque les timestamps sont correctement chargés.
+
+---
+
+## 8. Baseline avant test d'idempotence
+
+Après cette première exécution réussie, les volumes de février ont été relevés :
+
+```text
+INT_TRIPS__FLAGGED  = 3 577 543
+INT_TRIPS__ENRICHED = 3 305 246
+FCT_TRIPS           = 3 305 246
+```
+
+Ces valeurs constituent la baseline avant un second replay du même mois.
+
+---
+
+## 9. Second replay de février
+
+Les 22 Task Instances du même run ont été réinitialisées une nouvelle fois, sans modifier les données ni les paramètres.
+
+Après ce second replay, les mêmes requêtes de comptage donnent :
+
+```text
+INT_TRIPS__FLAGGED  = 3 577 543
+INT_TRIPS__ENRICHED = 3 305 246
+FCT_TRIPS           = 3 305 246
+```
+
+Comparaison :
+
+```text
+                         avant replay     après replay
+INT_TRIPS__FLAGGED        3 577 543        3 577 543
+INT_TRIPS__ENRICHED       3 305 246        3 305 246
+FCT_TRIPS                 3 305 246        3 305 246
+```
+
+Aucune accumulation de lignes n'a été observée.
+
+Le contrôle :
+
+```text
+marts.check_trips_no_duplicates
+```
+
+est également resté en `success`.
+
+---
+
+# Bilan du Bloc 5 ✅
+
+```text
+seuil normal de 10 % restauré                         ✅
+anomalie de rejet détectée                            ✅
+SQL de transformation vérifié                         ✅
+cause identifiée dans le FILE FORMAT Parquet          ✅
+USE_LOGICAL_TYPE passé à TRUE                         ✅
+février rechargé sans erreur                          ✅
+timestamps redevenus cohérents                        ✅
+pipeline février entièrement en success               ✅
+baseline relevée avant replay                         ✅
+second replay effectué                                ✅
+volumes strictement identiques                        ✅
+contrôle de doublons passant                          ✅
+idempotence démontrée                                 ✅
+```
+
+Le Bloc 5 est terminé.
+
+---
+
+# Bloc 6 — Validation finale du Jour 4 ✅
+
+## Objectif
+
+Le Bloc 6 consiste à remettre les trois mois dans un état cohérent puis à valider les résultats finaux attendus par le brief.
+
+---
+
+## 1. Vérification de janvier et mars
+
+Janvier et mars avaient été chargés avant la correction de `USE_LOGICAL_TYPE`.
+
+Un contrôle a confirmé qu'ils présentaient le même problème que février :
+
+```text
+SOURCE_FILE_MONTH  TOTAL_ROWS  DURATION_NON_POSITIVE  DURATION_TOO_LONG
+2025-01-01          3 475 226                   2 051          3 473 175
+2025-03-01          4 145 257                  22 280          4 122 977
+```
+
+La quasi-totalité des trajets était donc artificiellement classée en `duration_too_long`.
+
+---
+
+## 2. Rechargement de janvier et mars
+
+Les lignes correspondant aux deux fichiers ont été supprimées de la RAW puis les Parquet ont été rechargés avec le `FILE FORMAT` corrigé.
+
+Résultat du `COPY INTO` :
+
+```text
+yellow_tripdata_2025-01.parquet
+status      = LOADED
+rows_parsed = 3 475 226
+rows_loaded = 3 475 226
+errors_seen = 0
+
+yellow_tripdata_2025-03.parquet
+status      = LOADED
+rows_parsed = 4 145 257
+rows_loaded = 4 145 257
+errors_seen = 0
+```
+
+À ce stade, les trois mois de la RAW utilisent tous la même interprétation correcte des timestamps Parquet.
+
+---
+
+## 3. Rejeu de janvier et mars dans Airflow
+
+Les runs de janvier et mars ont été réinitialisés afin de recalculer les couches :
+
+```text
+STAGING
+  ↓
+INTERMEDIATE
+  ↓
+MARTS
+```
+
+Commande de validation :
+
+```bash
+astro dev run dags list-runs nyc_taxi_monthly
+```
+
+Résultat final :
+
+```text
+scheduled__2025-03-01T00:00:00+00:00 → success
+scheduled__2025-02-01T00:00:00+00:00 → success
+scheduled__2025-01-01T00:00:00+00:00 → success
+```
+
+Les trois exécutions demandées par le brief sont donc en `success`.
+
+---
+
+## 4. Volumes finaux de `FCT_TRIPS`
+
+Comptage par mois :
+
+```sql
+SELECT
+    source_file_month,
+    COUNT(*) AS trip_count
+FROM NYC_TAXI.MARTS.FCT_TRIPS
+WHERE source_file_month >= '2025-01-01'::date
+  AND source_file_month < '2025-04-01'::date
+GROUP BY source_file_month
+ORDER BY source_file_month;
+```
+
+Résultat :
+
+```text
+2025-01-01 → 3 251 337
+2025-02-01 → 3 305 246
+2025-03-01 → 3 825 795
+```
+
+Total :
+
+```sql
+SELECT COUNT(*) AS total_valid_trips
+FROM NYC_TAXI.MARTS.FCT_TRIPS
+WHERE source_file_month >= '2025-01-01'::date
+  AND source_file_month < '2025-04-01'::date;
+```
+
+Résultat :
+
+```text
+TOTAL_VALID_TRIPS = 10 382 378
+```
+
+Le résultat correspond exactement à la valeur attendue par le brief :
+
+```text
 10 382 378 trajets valides
 ```
 
-Checklist :
+---
+
+## 5. Contrôles qualité finaux
+
+Les trois quality gates intégrés au pipeline sont opérationnels :
 
 ```text
-[ ] trois runs Airflow en success
-[ ] FCT_TRIPS = 10 382 378 lignes
-[ ] dimensions créées
-[ ] marts créés
-[ ] MART_DATA_QUALITY alimenté
-[ ] contrôles Airflow passants
-[ ] replay de février idempotent
+check_raw_month_loaded
+intermediate.check_rejection_rate
+marts.check_trips_no_duplicates
 ```
 
-### État
+Le test volontaire du Bloc 4 a démontré qu'un contrôle en échec bloque bien les tâches qui en dépendent.
+
+Les exécutions finales démontrent ensuite que les trois contrôles passent avec les données corrigées.
+
+---
+
+## 6. Validation des exigences du Jour 4
 
 ```text
-⏳ À FAIRE
+lecture et compréhension des SQL fournis                 ✅
+ordre des dépendances déduit                             ✅
+une tâche Airflow par fichier SQL                        ✅
+TaskGroups STAGING / INTERMEDIATE / MARTS                ✅
+contrôle RAW fourni intégré                              ✅
+deux contrôles supplémentaires créés                    ✅
+retries=0 sur les contrôles                              ✅
+échec volontaire d'un quality gate vérifié              ✅
+tâches aval bloquées en upstream_failed                 ✅
+replay de février réalisé                                ✅
+idempotence de février démontrée                        ✅
+absence de doublons contrôlée                            ✅
+trois runs janvier / février / mars en success           ✅
+FCT_TRIPS = 10 382 378                                  ✅
 ```
 
 ---
 
-# Architecture cible du Jour 4
+# Bilan du Bloc 6 ✅
+
+Le Jour 4 est entièrement validé.
+
+Le pipeline Airflow orchestre désormais le flux complet :
 
 ```text
-                           NYC Open Data
-                                │
-                                ▼
-                         RAW.YELLOW_TRIPDATA
-                                │
-                                ▼
-                         contrôle RAW
-                                │
-                                ▼
-                             STAGING
-                   ┌────────────┼────────────┐
-                   │            │            │
-                   ▼            ▼            ▼
-             yellow trips     zones      codes TLC
-                   │            │            │
-                   ▼            │            ├──→ DIM_VENDOR
-          INT_TRIPS__FLAGGED    │            ├──→ DIM_PAYMENT_TYPE
-                   │            │            └──→ DIM_RATE_CODE
-          ┌────────┴───────┐    │
-          │                │    ▼
-          ▼                │  DIM_ZONE
- INT_TRIPS__ENRICHED       │
-          │                ▼
-          ▼          MART_DATA_QUALITY
+RAW
+ ↓
+contrôle RAW
+ ↓
+STAGING
+ ↓
+INTERMEDIATE
+ ↓
+contrôle du taux de rejet
+ ↓
+MARTS.FCT_TRIPS
+ ↓
+contrôle des doublons
+ ↓
+marts analytiques
+```
+
+Les résultats finaux sont reproductibles et les trois mois attendus ont été traités avec succès.
+
+---
+
+# Architecture finale du Jour 4
+
+```text
+                              NYC Open Data
+                                   │
+                                   ▼
+                          RAW.YELLOW_TRIPDATA
+                                   │
+                                   ▼
+                       check_raw_month_loaded
+                                   │
+                                   ▼
+                          create_core_tables
+                                   │
+             ┌─────────────────────┼──────────────────────┐
+             │                     │                      │
+             ▼                     ▼                      ▼
+      STG yellow trips       STG taxi zones           codes TLC
+             │                     │                      │
+             ▼                     ▼                      ├──→ DIM_VENDOR
+    INT_TRIPS__FLAGGED          DIM_ZONE                  ├──→ DIM_PAYMENT_TYPE
+             │                                            └──→ DIM_RATE_CODE
+             ▼
+    check_rejection_rate
+          ┌──┴───────────────┐
+          │                  │
+          ▼                  ▼
+ INT_TRIPS__ENRICHED    MART_DATA_QUALITY
+          │
+          ▼
       FCT_TRIPS
           │
-          ├────────→ MART_DAILY_REVENUE
+          ▼
+ check_trips_no_duplicates
           │
-          └────────→ MART_ZONE_HOURLY_DEMAND
+          ├───────────────→ MART_DAILY_REVENUE
+          │
+          └───────────────→ MART_ZONE_HOURLY_DEMAND
 
-              DIM_DATE
-                 ▲
-                 │
-         paramètres du DAG
+      DIM_DATE
+         ▲
+         │
+ paramètres du DAG
 ```
+
+Les quality gates sont placés au plus près des données qu'ils contrôlent et bloquent uniquement les branches qui en dépendent.
 
 ---
 
-# État actuel du Jour 4
+# État final du Jour 4
 
 ```text
-Bloc 1 — Analyse du SQL et dépendances                 ✅
-Bloc 2 — Orchestration SQL dans Airflow                ✅
-Bloc 3 — Contrôles qualité                             ✅
-Bloc 4 — Test d'échec                                  ✅
-Bloc 5 — Replay / idempotence                          ⏳
-Bloc 6 — Validation finale                             ⏳
+Bloc 1 — Analyse du SQL et dépendances                 ✅ TERMINÉ
+Bloc 2 — Orchestration SQL dans Airflow                ✅ TERMINÉ
+Bloc 3 — Contrôles qualité                             ✅ TERMINÉ
+Bloc 4 — Test d'échec                                  ✅ TERMINÉ
+Bloc 5 — Replay / idempotence                          ✅ TERMINÉ
+Bloc 6 — Validation finale                             ✅ TERMINÉ
 ```
 
-Le Bloc 1 est terminé.
-
-La reprise pourra commencer directement par :
+Résultats de référence :
 
 ```text
-Bloc 2
-→ préparer le DAG pour exécuter les fichiers SQL
-→ template_searchpath
+RAW janvier  = 3 475 226 lignes
+RAW février  = 3 577 543 lignes
+RAW mars     = 4 145 257 lignes
+
+FCT janvier  = 3 251 337 trajets valides
+FCT février  = 3 305 246 trajets valides
+FCT mars     = 3 825 795 trajets valides
+
+FCT total    = 10 382 378 trajets valides
+```
+
+Les trois DagRuns sont en `success` et le replay de février conserve exactement les mêmes volumes.
+
+```text
+Jour 4 ✅ TERMINÉ
 ```
