@@ -1,0 +1,17 @@
+# Secrets
+.env
+*.p8
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Downloaded source data
+parquet/*.parquet
+csv/*.csv
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/

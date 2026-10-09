@@ -12,7 +12,8 @@ USE SCHEMA RAW;
 -- ============================================================
 
 CREATE OR REPLACE FILE FORMAT PARQUET_FF
-  TYPE = PARQUET;
+  TYPE = PARQUET
+  USE_LOGICAL_TYPE = TRUE;
 
 CREATE OR REPLACE FILE FORMAT CSV_FF
   TYPE = CSV
