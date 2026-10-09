@@ -9,7 +9,7 @@ Bloc 1 — Réponse métier finale                         ✅ TERMINÉ
 Bloc 2 — Contrôle des données anormales                ✅ TERMINÉ
 Bloc 3 — Consommation Snowflake                        ✅ TERMINÉ
 Bloc 4 — Sécurité et droits                            ✅ TERMINÉ
-Bloc 5 — Finalisation du dépôt et des livrables        ⏳ À FAIRE
+Bloc 5 — Finalisation du dépôt et des livrables        ✅ TERMINÉ
 Bloc 6 — Préparation de la démonstration finale        ⏳ À FAIRE
 ```
 

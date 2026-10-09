@@ -557,9 +557,9 @@ Auto-resume  : true
 Consommation mesurée lors de la validation du projet :
 
 ```text
-Crédits totaux          : 0,7612
-Compute                 : 0,7433
-Cloud services          : 0,0179
+Crédits totaux          : 0,8312
+Compute                 : 0,8130
+Cloud services          : 0,0182
 ```
 
 Cette valeur évoluera naturellement si de nouvelles requêtes ou exécutions sont lancées.
